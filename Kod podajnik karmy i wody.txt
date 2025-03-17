@@ -1,0 +1,142 @@
+#include <virtuabotixRTC.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+// Definicja pinów
+#define ONE_WIRE_BUS 7  // Pin czujnika DS18B20
+#define RELAY_PIN 12     // Pin przekaźnika Grzałki
+#define PUMP_PIN 13      // Pin przekaźnika Pompki
+#define IN1 8
+#define IN2 9
+#define IN3 10
+#define IN4 11
+#define WATER_SENSOR_PIN 2 // Pin czujnika poziomu wody CMW85
+
+// Tworzenie obiektu RTC
+virtuabotixRTC myRTC(6, 5, 4);
+
+// Inicjalizacja czujnika temperatury
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+// Sekwencja kroków dla pełnego kroku (4-fazowa)
+int krok[4][4] = {
+  {1, 0, 1, 0},  // Krok 1
+  {0, 1, 1, 0},  // Krok 2
+  {0, 1, 0, 1},  // Krok 3
+  {1, 0, 0, 1}   // Krok 4
+};
+
+int lastHour = -1;
+int lastMinute = -1;
+
+void setup() {
+  Serial.begin(9600);
+    int currentHour = myRTC.hours;
+  if (currentHour == 0) {  // Jeśli czas jest 00:00 (domyślny stan po resecie)
+    myRTC.setDS1302Time(50, 57, 21, 6, 10, 3, 2025);  // Ustawienie daty i godziny
+  }
+  // Konfiguracja pinów silnika
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  // Konfiguracja przekaźników
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW); // Domyślnie wyłączony
+  pinMode(PUMP_PIN, OUTPUT);
+  digitalWrite(PUMP_PIN, HIGH); // Domyślnie wyłączona
+
+  // Konfiguracja czujnika poziomu wody
+  pinMode(WATER_SENSOR_PIN, INPUT);
+
+  // Inicjalizacja czujnika temperatury
+  sensors.begin();
+}
+
+// Funkcja stabilizacji odczytu poziomu wody
+bool sprawdzPoziomWody() {
+  bool poziom1 = !digitalRead(WATER_SENSOR_PIN);
+  delay(50);  // Krótkie opóźnienie
+  bool poziom2 = !digitalRead(WATER_SENSOR_PIN);
+  delay(50);
+  bool poziom3 = !digitalRead(WATER_SENSOR_PIN);
+  return (poziom1 == poziom2 && poziom2 == poziom3);  // Sprawdzanie spójności
+}
+
+void wykonajObrot(int liczbaKrokow, int opoznienieMs) {
+  for (int i = 0; i < liczbaKrokow; i++) {
+    int faza = i % 4;
+    digitalWrite(IN1, krok[faza][0]);
+    digitalWrite(IN2, krok[faza][1]);
+    digitalWrite(IN3, krok[faza][2]);
+    digitalWrite(IN4, krok[faza][3]);
+    delay(opoznienieMs);
+  }
+}
+
+void loop() {
+  myRTC.updateTime();
+
+  Serial.print("Aktualna data/godzina: ");
+  Serial.print(myRTC.dayofmonth);
+  Serial.print("/");
+  Serial.print(myRTC.month);
+  Serial.print("/"); 
+  Serial.print(myRTC.year);
+  Serial.print("  ");
+  Serial.print(myRTC.hours);
+  Serial.print(":");
+  Serial.print(myRTC.minutes);
+  Serial.print(":");
+  Serial.println(myRTC.seconds);
+
+  // Odczyt temperatury
+  sensors.requestTemperatures();
+  float temperatura = sensors.getTempCByIndex(0);
+  Serial.print("Temperatura: ");
+  Serial.print(temperatura);
+  Serial.println(" C");
+
+  // Sprawdzenie poziomu wody
+  bool poziomWody = sprawdzPoziomWody();
+  Serial.print("Poziom wody: ");
+  Serial.println(poziomWody ? "OK" : "NISKI!");
+
+  // Sterowanie przekaźnikiem grzałki
+  if (temperatura <= 5.0 && poziomWody) {
+    digitalWrite(RELAY_PIN, HIGH);
+    Serial.println("Grzałka WŁĄCZONA!");
+  } else if (temperatura >= 15.0 || !poziomWody) {
+    digitalWrite(RELAY_PIN, LOW);
+    Serial.println("Grzałka WYŁĄCZONA!");
+  }
+
+  // Sterowanie pompą wodną o określonej godzinie
+  if (myRTC.hours == 21 && myRTC.minutes == 59 && poziomWody) {
+    digitalWrite(PUMP_PIN, HIGH);
+    Serial.println("Pompka WŁĄCZONA!");
+    delay(60000); // Praca przez 60 sekund
+    digitalWrite(PUMP_PIN, LOW);
+    Serial.println("Pompka WYŁĄCZONA!");
+  }
+
+  // Wyświetlanie statusu pompki 
+  Serial.print("Stan pompki: ");
+  Serial.println(digitalRead(PUMP_PIN) == LOW ? "WŁĄCZONA" : "WYŁĄCZONA");
+
+  // Sprawdzanie czasu dla obrotu silnika
+  if ((myRTC.hours == 21 && myRTC.minutes == 58 && (lastHour != 21 || lastMinute != 58)) || 
+      (myRTC.hours == 21 && myRTC.minutes == 59 && (lastHour != 21 || lastMinute != 59)) || 
+      (myRTC.hours == 22 && myRTC.minutes == 0 && (lastHour != 22 || lastMinute != 0))) {
+    //Obrót silnika o 90° (50 kroków)
+    wykonajObrot(50, 5); 
+    Serial.println("Obrót o 90 stopni wykonany");
+    // Zapamiętanie godziny i minut, aby uniknąć ponownego obrotu w tej samej godzinie
+    lastHour = myRTC.hours;
+    lastMinute = myRTC.minutes;
+  }
+
+  delay(3000);
+}
